@@ -118,6 +118,7 @@ const Builder = ({ navigate, appId }) => {
     return params.get('inspect') === 'data' ? 'data' : 'tree';
   }, [builderQuery]);
   const [selected, setSelected] = React.useState('b4');
+  const [selectedBlockIds, setSelectedBlockIds] = React.useState(['b4']);
   const [device, setDevice] = React.useState('desktop');
   const isNewEntry = rawAppId === 'new' || rawAppId === 'new:entry';
   const isScratch = rawAppId && rawAppId.startsWith('new:scratch');
@@ -144,6 +145,9 @@ const Builder = ({ navigate, appId }) => {
   const [input, setInput] = React.useState('');
   const [selectedSources, setSelectedSources] = React.useState((isNewAi || isTemplate || isNewEntry) ? [] : ['snowflake.prod.orders']);
   const [selectionStage, setSelectionStage] = React.useState(isNewAi ? 'source' : 'ready');
+  const [kaiSuggestedSources, setKaiSuggestedSources] = React.useState([]);
+  const [kaiSelectedSourceIds, setKaiSelectedSourceIds] = React.useState([]);
+  const [pendingKaiBuild, setPendingKaiBuild] = React.useState(null);
   const [buildStepsOpen, setBuildStepsOpen] = React.useState(true);
   const [generating, setGenerating] = React.useState(false);
   const [genBlockId, setGenBlockId] = React.useState(null);
@@ -189,6 +193,20 @@ const Builder = ({ navigate, appId }) => {
   React.useEffect(() => {
     if (streamRef.current) streamRef.current.scrollTop = streamRef.current.scrollHeight;
   }, [messages, generating]);
+
+  React.useEffect(() => {
+    if (!selected) {
+      setSelectedBlockIds([]);
+      return;
+    }
+    setSelectedBlockIds(prev => (prev.includes(selected) ? prev : [selected]));
+  }, [selected]);
+
+  React.useEffect(() => {
+    const availableIds = new Set(def.blocks.map(b => b.id));
+    setSelectedBlockIds(prev => prev.filter(id => availableIds.has(id)));
+    setSelected(prev => (prev && availableIds.has(prev) ? prev : null));
+  }, [def.blocks]);
 
   React.useEffect(() => {
     setTab(requestedInspectTab);
@@ -354,6 +372,19 @@ const Builder = ({ navigate, appId }) => {
     startDraftBuild(source.id);
   };
 
+  const handlePreviewBlockSelection = (blockId) => {
+    if (selectedBlockIds.includes(blockId)) {
+      const next = selectedBlockIds.filter(id => id !== blockId);
+      setSelectedBlockIds(next);
+      if (selected === blockId) setSelected(next[next.length - 1] || null);
+      return;
+    }
+
+    const next = [...selectedBlockIds, blockId];
+    setSelectedBlockIds(next);
+    setSelected(blockId);
+  };
+
   const promoteToStandard = ({ note } = {}) => {
     if (promoteTimerRef.current) clearTimeout(promoteTimerRef.current);
     setTransitionNote(note || 'Kai is setting up your workspace...');
@@ -366,12 +397,82 @@ const Builder = ({ navigate, appId }) => {
     }, 320);
   };
 
+  const suggestDataSourcesForInput = (inputText) => {
+    const text = (inputText || '').toLowerCase();
+    const keywords = {
+      finance: ['revenue', 'sales', 'finance', 'order', 'invoice', 'kpi', 'executive', 'dashboard'],
+      marketing: ['traffic', 'events', 'campaign', 'conversion', 'attribution', 'engagement'],
+      crm: ['customer', 'lead', 'opportunit', 'pipeline', 'account'],
+    };
+
+    const score = (sourceId) => {
+      const id = sourceId.toLowerCase();
+      let points = 0;
+      if (keywords.finance.some(k => text.includes(k) && (id.includes('orders') || id.includes('invoice')))) points += 3;
+      if (keywords.marketing.some(k => text.includes(k) && (id.includes('events') || id.includes('pageview')))) points += 3;
+      if (keywords.crm.some(k => text.includes(k) && (id.includes('customer') || id.includes('salesforce') || id.includes('opportunit')))) points += 3;
+      if (text.includes('table') || text.includes('data') || text.includes('report')) points += 1;
+      return points;
+    };
+
+    const ranked = DATA_SOURCES
+      .map(source => ({ source, points: score(source.id) }))
+      .sort((a, b) => b.points - a.points)
+      .map(item => item.source);
+
+    return ranked.slice(0, 4);
+  };
+
+  const startKaiDataSuggestion = ({ type, prompt, template }) => {
+    const hintText = type === 'template' ? `${template.label} ${template.prompt}` : prompt;
+    const suggestions = suggestDataSourcesForInput(hintText);
+
+    promoteToStandard({ note: type === 'template' ? `Kai is preparing ${template.label}...` : 'Kai is preparing your first draft...' });
+    setView('preview');
+    setSelectionStage('suggest');
+    setKaiSuggestedSources(suggestions);
+    setKaiSelectedSourceIds([]);
+    setPendingKaiBuild({ type, prompt, template });
+    setInput('');
+
+    setMessages(m => [
+      ...m,
+      { role: 'user', text: type === 'template' ? `Use ${template.label} template` : prompt },
+      {
+        role: 'kai',
+        text: type === 'template'
+          ? `I found data sources relevant for the ${template.label} template. Select which ones to use before I continue.`
+          : 'I found relevant data sources for your prompt. Select which ones to use before I continue.',
+        action: null,
+      },
+    ]);
+  };
+
+  const confirmKaiSuggestedDataSelection = (skip = false) => {
+    if (!pendingKaiBuild) return;
+    const chosenIds = skip ? [] : kaiSelectedSourceIds;
+
+    if (pendingKaiBuild.type === 'template' && pendingKaiBuild.template) {
+      completeTemplateBuild(pendingKaiBuild.template, chosenIds);
+    } else if (pendingKaiBuild.type === 'prompt' && pendingKaiBuild.prompt) {
+      completePromptBuild(pendingKaiBuild.prompt, chosenIds);
+    }
+
+    setPendingKaiBuild(null);
+    setKaiSuggestedSources([]);
+    setKaiSelectedSourceIds([]);
+  };
+
   const openPromptBuild = (prompt, sourceIds = []) => {
     const trimmedPrompt = (prompt || '').trim();
     if (!trimmedPrompt) return;
 
     const resolvedSourceIds = Array.isArray(sourceIds) ? sourceIds : (sourceIds ? [sourceIds] : []);
-    completePromptBuild(trimmedPrompt, resolvedSourceIds);
+    if (resolvedSourceIds.length > 0) {
+      completePromptBuild(trimmedPrompt, resolvedSourceIds);
+      return;
+    }
+    startKaiDataSuggestion({ type: 'prompt', prompt: trimmedPrompt });
   };
 
   const completePromptBuild = (prompt, sourceIds) => {
@@ -397,7 +498,7 @@ const Builder = ({ navigate, appId }) => {
   };
 
   const openTemplateBuild = (template) => {
-    completeTemplateBuild(template, entrySelectedSourceIds);
+    startKaiDataSuggestion({ type: 'template', template });
   };
 
   const completeTemplateBuild = (template, sourceIds) => {
@@ -428,6 +529,9 @@ const Builder = ({ navigate, appId }) => {
     promoteToStandard({ note: mode === 'git' ? 'Kai is opening your repository workspace...' : 'Kai is opening a blank builder workspace...' });
     setView('code');
     setSelectionStage('ready');
+    setPendingKaiBuild(null);
+    setKaiSuggestedSources([]);
+    setKaiSelectedSourceIds([]);
     setSelected(null);
     setDef(BLANK_DEF);
     setSelectedSources(entrySelectedSourceIds);
@@ -472,7 +576,15 @@ const Builder = ({ navigate, appId }) => {
   };
 
   const selectedBlock = def.blocks.find(b => b.id === selected);
-  const entrySelectedSources = SOURCE_OPTIONS.filter(source => entrySelectedSourceIds.includes(source.id));
+  const selectedBlocks = selectedBlockIds
+    .map(id => def.blocks.find(b => b.id === id))
+    .filter(Boolean);
+  const selectedBlockLabel = selectedBlock
+    ? ({ header: 'Header', filters: 'Filter bar', kpis: 'KPI row', chart: 'Chart', table: 'Table', alert: 'Alert feed' }[selectedBlock.type] || selectedBlock.type)
+    : null;
+  const entrySelectedSources = DATA_SOURCES
+    .filter(source => entrySelectedSourceIds.includes(source.id))
+    .map(source => ({ ...source, label: source.id }));
   const entrySelectedSource = entrySelectedSources[0] || null;
 
   const toggleEntrySource = (sourceId) => {
@@ -492,7 +604,7 @@ const Builder = ({ navigate, appId }) => {
   };
 
   const sendPrompt = (text) => {
-    if (selectionStage === 'source') return;
+    if (selectionStage === 'source' || selectionStage === 'suggest') return;
     if (!text.trim()) return;
     const userMsg = { role: 'user', text };
     setMessages(m => [...m, userMsg]);
@@ -700,7 +812,7 @@ const Builder = ({ navigate, appId }) => {
               <div className="kai-avatar">K</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="kai-name">Kai</div>
-                <div className="kai-state">{builderStage === 'transition' ? 'preparing workspace...' : (selectionStage === 'source' ? 'waiting for source' : generating ? 'drafting changes…' : 'ready')}</div>
+                <div className="kai-state">{builderStage === 'transition' ? 'preparing workspace...' : (selectionStage === 'source' ? 'waiting for source' : selectionStage === 'suggest' ? 'waiting for data selection' : generating ? 'drafting changes…' : 'ready')}</div>
               </div>
               <button className="btn-ghost" style={{ padding: 4, borderRadius: 4, color: 'var(--text-3)' }}>{I.more}</button>
             </div>
@@ -799,6 +911,32 @@ const Builder = ({ navigate, appId }) => {
                 </div>
               )}
 
+              {selectionStage === 'suggest' && (
+                <div style={{ padding: '16px', border: '1px solid var(--border)', borderRadius: 14, background: 'var(--surface-2)', marginBottom: 10 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>Suggested data sources</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
+                    {kaiSuggestedSources.map(source => (
+                      <button
+                        key={source.id}
+                        className={`data-pill ${kaiSelectedSourceIds.includes(source.id) ? 'bound' : ''}`}
+                        style={{ textAlign: 'left' }}
+                        onClick={() => setKaiSelectedSourceIds(prev => prev.includes(source.id) ? prev.filter(id => id !== source.id) : [...prev, source.id])}
+                      >
+                        <span className="pill-icon">{I.database}</span>
+                        <span className="mono" style={{ flex: 1 }}>{source.id}</span>
+                        <span style={{ color: 'var(--text-3)', fontSize: 10 }}>{source.rows}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                    <Btn variant="ghost" size="sm" onClick={() => confirmKaiSuggestedDataSelection(true)}>Skip for now</Btn>
+                    <Btn variant="accent" size="sm" onClick={() => confirmKaiSuggestedDataSelection(false)}>
+                      Use selected ({kaiSelectedSourceIds.length})
+                    </Btn>
+                  </div>
+                </div>
+              )}
+
               <div className="chat-suggest" style={{ paddingTop: 0, paddingBottom: 8 }}>
                 <button className="chat-suggest-chip" onClick={() => sendPrompt('Add an anomaly feed under the table')}>+ Anomaly feed</button>
                 <button className="chat-suggest-chip" onClick={() => sendPrompt('Make the chart show YoY comparison')}>YoY overlay</button>
@@ -806,18 +944,28 @@ const Builder = ({ navigate, appId }) => {
               </div>
 
               <div className="chat-box">
+                {selectedBlocks.length > 0 && (
+                  <div style={{ padding: '8px 10px 0', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {selectedBlocks.map(block => (
+                      <span key={block.id} className="badge badge-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                        {I.link}
+                        Context: {({ header: 'Header', filters: 'Filter bar', kpis: 'KPI row', chart: 'Chart', table: 'Table', alert: 'Alert feed' }[block.type] || block.type)} ({block.id})
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(input); } }}
-                  placeholder={selectionStage === 'source' ? 'Select a data source from above to begin.' : 'Ask Kai to modify the app…'}
-                  disabled={selectionStage === 'source'}
+                  placeholder={selectionStage === 'source' ? 'Select a data source from above to begin.' : selectionStage === 'suggest' ? 'Choose suggested data sources above to continue.' : (selectedBlock ? `Ask Kai to modify ${selectedBlockLabel.toLowerCase()}…` : 'Ask Kai to modify the app…')}
+                  disabled={selectionStage === 'source' || selectionStage === 'suggest'}
                 />
                 <div className="chat-box-footer">
                   <button className="btn-ghost btn-sm" style={{ fontSize: 11 }}>{I.database} @table</button>
                   <button className="btn-ghost btn-sm" style={{ fontSize: 11 }}>{I.code} /block</button>
                   <div style={{ marginLeft: 'auto' }}>
-                    <Btn variant="accent" size="sm" icon={I.arrow} onClick={() => sendPrompt(input)} disabled={selectionStage === 'source' || !input.trim() || generating} />
+                    <Btn variant="accent" size="sm" icon={I.arrow} onClick={() => sendPrompt(input)} disabled={selectionStage === 'source' || selectionStage === 'suggest' || !input.trim() || generating} />
                   </div>
                 </div>
               </div>
@@ -828,100 +976,105 @@ const Builder = ({ navigate, appId }) => {
 
           <div className={`b-preview ${builderStage === 'transition' ? 'is-revealing' : ''}`}>
             {builderStage === 'entry' ? (
-              <div className="builder-entry-main-surface">
-                <div className="builder-entry-hero">
-                  <h1>What do you want to build?</h1>
-                  <p>Describe the app, start from a template, or begin from scratch.</p>
-                  <div className="builder-entry-composer">
-                    <textarea
-                      value={entryPrompt}
-                      onChange={(e) => setEntryPrompt(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          submitEntryPrompt();
-                        }
-                      }}
-                      placeholder={entrySelectedSource ? `Describe the app you want to build using ${entrySelectedSource.label}...` : 'Describe the app you want to build...'}
-                    />
-                    <div className="builder-entry-composer-footer">
-                      <div className="builder-entry-input-actions">
-                        <button className="btn-ghost btn-sm" onClick={() => appendEntryPromptToken(entrySelectedSource ? `@table:${entrySelectedSource.label}` : '@table')}>
-                          {I.database} Attach table
-                        </button>
-                        <button className="btn-ghost btn-sm" onClick={() => appendEntryPromptToken('@app:Revenue Pulse')}>
-                          {I.copy} Reference app
-                        </button>
+              <div className="builder-entry-layout">
+                <div className="builder-entry-main">
+                  <div className="builder-entry-main-surface">
+                    <div className="builder-entry-hero">
+                      <h1>What do you want to build?</h1>
+                      <p>Describe the app, start from a template, or begin from scratch.</p>
+                      <div className="builder-entry-composer">
+                        <textarea
+                          value={entryPrompt}
+                          onChange={(e) => setEntryPrompt(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              submitEntryPrompt();
+                            }
+                          }}
+                          placeholder={entrySelectedSource ? `Describe the app you want to build using ${entrySelectedSource.label}...` : 'Describe the app you want to build...'}
+                        />
+                        <div className="builder-entry-composer-footer">
+                          <div className="builder-entry-input-actions">
+                            <button className="btn-ghost btn-sm" onClick={() => appendEntryPromptToken(entrySelectedSource ? `@table:${entrySelectedSource.label}` : '@table')}>
+                              {I.database} Attach table
+                            </button>
+                            <button className="btn-ghost btn-sm" onClick={() => appendEntryPromptToken('@app:Revenue Pulse')}>
+                              {I.copy} Reference app
+                            </button>
+                          </div>
+                          <Btn variant="accent" size="sm" icon={I.arrow} onClick={submitEntryPrompt} disabled={!entryPrompt.trim()}>
+                            Build with Kai
+                          </Btn>
+                        </div>
                       </div>
-                      <Btn variant="accent" size="sm" icon={I.arrow} onClick={submitEntryPrompt} disabled={!entryPrompt.trim()}>
-                        Build with Kai
-                      </Btn>
-                    </div>
-                  </div>
                       {entrySelectedSources.length > 0 && (
-                    <div className="builder-entry-context">Using <span className="mono">{entrySelectedSources.map(source => source.label).join(', ')}</span> as optional context.</div>
-                  )}
+                        <div className="builder-entry-context">Using <span className="mono">{entrySelectedSources.map(source => source.label).join(', ')}</span> as optional context.</div>
+                      )}
 
-                  <div className="builder-entry-scratch">
-                    <div>
-                      <div className="builder-entry-scratch-title">Start from scratch</div>
-                      <div className="builder-entry-scratch-copy">For users who want full control.</div>
+                      <div className="builder-entry-scratch">
+                        <div>
+                          <div className="builder-entry-scratch-title">Start from scratch</div>
+                          <div className="builder-entry-scratch-copy">For users who want full control.</div>
+                        </div>
+                        <div className="builder-entry-scratch-actions">
+                          <Btn variant="outline" size="sm" icon={I.git} onClick={openGitConnectModal}>Connect Git repository</Btn>
+                          <Btn variant="outline" size="sm" icon={I.code} onClick={() => openScratchBuild('code')}>Open blank code editor</Btn>
+                        </div>
+                      </div>
+
+                      <div className="builder-entry-template-divider" aria-hidden="true" />
+
+                      <div className="builder-entry-section">
+                        <div className="builder-entry-section-title">Template suggestions</div>
+                        {(() => {
+                          const categories = ['All', ...Array.from(new Set(ENTRY_TEMPLATES.map(t => t.category)))];
+                          const selectedCategory = templateFilterCategory || 'All';
+                          const filteredTemplates = selectedCategory === 'All' ? ENTRY_TEMPLATES : ENTRY_TEMPLATES.filter(t => t.category === selectedCategory);
+                          return (
+                            <>
+                              <div className="builder-entry-template-filters">
+                                {categories.map(cat => (
+                                  <button
+                                    key={cat}
+                                    className={`builder-entry-filter-tab ${selectedCategory === cat ? 'active' : ''}`}
+                                    onClick={() => setTemplateFilterCategory(cat === 'All' ? null : cat)}
+                                  >
+                                    {cat}
+                                  </button>
+                                ))}
+                              </div>
+                              <div className="builder-entry-template-grid">
+                                {filteredTemplates.map((template) => (
+                                  <button
+                                    key={template.id}
+                                    className="builder-entry-template-card"
+                                    onClick={() => openTemplateBuild(template)}
+                                  >
+                                    <div className={`builder-entry-template-preview preview-${template.preview}`} aria-hidden="true">
+                                      <span className="template-preview-pill" />
+                                      <span className="template-preview-line short" />
+                                      <span className="template-preview-line mid" />
+                                      <span className="template-preview-line long" />
+                                      <span className="template-preview-block a" />
+                                      <span className="template-preview-block b" />
+                                      <span className="template-preview-block c" />
+                                    </div>
+                                    <div className="builder-entry-template-meta">
+                                      <div className="builder-entry-template-name">{template.label}</div>
+                                      <div className="builder-entry-template-desc">{template.desc}</div>
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </div>
                     </div>
-                    <div className="builder-entry-scratch-actions">
-                      <Btn variant="outline" size="sm" icon={I.git} onClick={openGitConnectModal}>Connect Git repository</Btn>
-                      <Btn variant="outline" size="sm" icon={I.code} onClick={() => openScratchBuild('code')}>Open blank code editor</Btn>
-                    </div>
-                  </div>
-
-                  <div className="builder-entry-template-divider" aria-hidden="true" />
-
-                  <div className="builder-entry-section">
-                    <div className="builder-entry-section-title">Template suggestions</div>
-                    {(() => {
-                      const categories = ['All', ...Array.from(new Set(ENTRY_TEMPLATES.map(t => t.category)))];
-                      const selectedCategory = templateFilterCategory || 'All';
-                      const filteredTemplates = selectedCategory === 'All' ? ENTRY_TEMPLATES : ENTRY_TEMPLATES.filter(t => t.category === selectedCategory);
-                      return (
-                        <>
-                          <div className="builder-entry-template-filters">
-                            {categories.map(cat => (
-                              <button
-                                key={cat}
-                                className={`builder-entry-filter-tab ${selectedCategory === cat ? 'active' : ''}`}
-                                onClick={() => setTemplateFilterCategory(cat === 'All' ? null : cat)}
-                              >
-                                {cat}
-                              </button>
-                            ))}
-                          </div>
-                          <div className="builder-entry-template-grid">
-                            {filteredTemplates.map((template) => (
-                              <button
-                                key={template.id}
-                                className="builder-entry-template-card"
-                                onClick={() => openTemplateBuild(template)}
-                              >
-                                <div className={`builder-entry-template-preview preview-${template.preview}`} aria-hidden="true">
-                                  <span className="template-preview-pill" />
-                                  <span className="template-preview-line short" />
-                                  <span className="template-preview-line mid" />
-                                  <span className="template-preview-line long" />
-                                  <span className="template-preview-block a" />
-                                  <span className="template-preview-block b" />
-                                  <span className="template-preview-block c" />
-                                </div>
-                                <div className="builder-entry-template-meta">
-                                  <div className="builder-entry-template-name">{template.label}</div>
-                                  <div className="builder-entry-template-desc">{template.desc}</div>
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        </>
-                      );
-                    })()}
                   </div>
                 </div>
+
               </div>
             ) : (
               <>
@@ -942,9 +1095,9 @@ const Builder = ({ navigate, appId }) => {
                 {view === 'preview' && (
                   <div className="preview-canvas">
                     <div className={`preview-frame ${device}`}>
-                      <div className="app-canvas">
+                      <div className="app-canvas" onClick={() => { setSelected(null); setSelectedBlockIds([]); }}>
                         {def.blocks.map(b => (
-                          <AppBlock key={b.id} block={b} selected={selected === b.id} generating={genBlockId === b.id} onSelect={() => setSelected(b.id)} onBind={() => bindBlock(b.id)} />
+                          <AppBlock key={b.id} block={b} selected={selectedBlockIds.includes(b.id)} generating={genBlockId === b.id} onSelect={() => handlePreviewBlockSelection(b.id)} onBind={() => bindBlock(b.id)} />
                         ))}
                       </div>
                     </div>
@@ -962,9 +1115,9 @@ const Builder = ({ navigate, appId }) => {
                       <div className={`code-preview-canvas-wrap ${codePreviewCollapsed ? 'collapsed' : ''}`} aria-hidden={codePreviewCollapsed}>
                         <div className="code-preview-canvas">
                           <div className={`preview-frame ${device}`}>
-                            <div className="app-canvas">
+                            <div className="app-canvas" onClick={() => { setSelected(null); setSelectedBlockIds([]); }}>
                               {def.blocks.map(b => (
-                                <AppBlock key={b.id} block={b} selected={selected === b.id} generating={genBlockId === b.id} onSelect={() => setSelected(b.id)} onBind={() => bindBlock(b.id)} />
+                                <AppBlock key={b.id} block={b} selected={selectedBlockIds.includes(b.id)} generating={genBlockId === b.id} onSelect={() => handlePreviewBlockSelection(b.id)} onBind={() => bindBlock(b.id)} />
                               ))}
                             </div>
                           </div>
@@ -1090,7 +1243,7 @@ const Builder = ({ navigate, appId }) => {
             <div className="inspect-body">
               {tab === 'tree' && (
                 <div>
-                  <BlockTree def={def} selected={selected} onSelect={setSelected} pageOpen={treePageOpen} blocksOpen={treeBlocksOpen} toggleOpen={section => {
+                  <BlockTree def={def} selected={selected} selectedIds={selectedBlockIds} onSelect={(id) => { setSelected(id); setSelectedBlockIds(id ? [id] : []); }} pageOpen={treePageOpen} blocksOpen={treeBlocksOpen} toggleOpen={section => {
                     if (section === 'page') setTreePageOpen(open => !open);
                     if (section === 'blocks') setTreeBlocksOpen(open => !open);
                   }} onReorderBlocks={reorderBlocks} />
@@ -1384,7 +1537,8 @@ const BlockAlert = ({ title, rows }) => (
 );
 
 /* ==== INSPECTOR PANELS ==== */
-const BlockTree = ({ def, selected, onSelect, pageOpen, blocksOpen, toggleOpen, onReorderBlocks }) => {
+const BlockTree = ({ def, selected, selectedIds = [], onSelect, pageOpen, blocksOpen, toggleOpen, onReorderBlocks }) => {
+  const selectedIdSet = new Set(selectedIds);
   const selectedBlock = def.blocks.find(b => b.id === selected);
   const showPage = pageOpen || selected === 'page';
   const showBlocks = blocksOpen || !!selectedBlock;
@@ -1429,7 +1583,7 @@ const BlockTree = ({ def, selected, onSelect, pageOpen, blocksOpen, toggleOpen, 
           {blocksOpen ? def.blocks.map(b => (
             <div
               key={b.id}
-              className={`tree-node indent-1 draggable ${selected === b.id ? 'selected' : ''} ${draggedBlockId === b.id ? 'dragging' : ''} ${dropTargetBlockId === b.id ? 'drop-target' : ''}`}
+              className={`tree-node indent-1 draggable ${selectedIdSet.has(b.id) ? 'selected' : ''} ${draggedBlockId === b.id ? 'dragging' : ''} ${dropTargetBlockId === b.id ? 'drop-target' : ''}`}
               draggable
               onDragStart={(e) => beginDrag(e, b.id)}
               onDragOver={(e) => {

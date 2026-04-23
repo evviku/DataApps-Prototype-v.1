@@ -1110,7 +1110,7 @@ input:focus, textarea:focus, select:focus, button:focus { outline: none; }
 }
 .builder-entry-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   flex: 1;
   min-height: 0;
@@ -1404,7 +1404,7 @@ input:focus, textarea:focus, select:focus, button:focus { outline: none; }
 }
 .builder.chat-only { grid-template-columns: 320px minmax(480px, 1fr); }
 @media (max-width: 1180px) {
-  .builder-entry-layout { grid-template-columns: minmax(0, 1fr) 280px; }
+  .builder-entry-layout { grid-template-columns: minmax(0, 1fr); }
   .builder-entry-template-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .builder { grid-template-columns: 260px minmax(0, 1fr); }
   .builder:not(.builder-entry-mode) .b-inspect { display: none; }
