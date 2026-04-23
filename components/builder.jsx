@@ -1100,14 +1100,12 @@ const Builder = ({ navigate, appId }) => {
                 </div>
               )}
               {tab === 'data' && (
-                selectedSources.length > 0 ? (
-                  <DataSources selectedSources={selectedSources} />
-                ) : (
-                  <div style={{ padding: '16px', color: 'var(--text-3)', fontSize: 12, textAlign: 'center' }}>
-                    <div style={{ marginBottom: 12 }}>No data sources selected yet.</div>
-                    <Btn variant="outline" size="sm" style={{ width: '100%' }}>Connect data</Btn>
-                  </div>
-                )
+                <DataSources
+                  selectedSources={selectedSources}
+                  onToggleSource={(id) => setSelectedSources(prev =>
+                    prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
+                  )}
+                />
               )}
             </div>
           </div>

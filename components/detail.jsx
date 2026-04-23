@@ -384,13 +384,10 @@ const DataSourceCard = ({ s, i, onManageData }) => {
 
 const DataTab = ({ appId, openDataEditor }) => (
   <div>
-    <div className="data-tab-section-header">
-      <div>
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 3 }}>Data sources</div>
-        <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 2 }}>Tables and views this app reads from. Changes in sources propagate automatically.</div>
-        <div style={{ fontSize: 11, color: 'var(--text-4, var(--text-3))', opacity: 0.7 }}>Changes to data sources are managed in the builder.</div>
-      </div>
-      <Btn variant="outline" size="sm" icon={I.wand} onClick={() => openDataEditor && openDataEditor(appId)}>Edit data</Btn>
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 3 }}>Data sources</div>
+      <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 2 }}>Tables and views this app reads from. Changes in sources propagate automatically.</div>
+      <div style={{ fontSize: 11, color: 'var(--text-4, var(--text-3))', opacity: 0.7 }}>Changes to data sources are managed in the builder.</div>
     </div>
 
     {DATA_SOURCES.slice(0, 3).map((s, i) => (
