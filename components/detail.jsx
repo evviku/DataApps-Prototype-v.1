@@ -1,6 +1,6 @@
 /* Detail page — post-creation */
 
-const Detail = ({ navigate, appId, tab, setTab }) => {
+const Detail = ({ navigate, appId, tab, setTab, openDataEditor }) => {
   const app = APPS.find(a => a.id === (appId || 'rev-ops')) || APPS[0];
   const [moreOpen, setMoreOpen] = React.useState(false);
   const gitConnectionByApp = {
@@ -70,7 +70,7 @@ const Detail = ({ navigate, appId, tab, setTab }) => {
           {tab === 'overview' && <OverviewTab app={app} />}
           {tab === 'analytics' && <AnalyticsTab />}
           {tab === 'deployments' && <DeploymentsTab />}
-          {tab === 'data' && <DataTab />}
+          {tab === 'data' && <DataTab appId={app.id} openDataEditor={openDataEditor} />}
           {tab === 'logs' && <LogsTab />}
           {tab === 'settings' && <SettingsTab />}
         </div>
@@ -324,40 +324,82 @@ const DeploymentsTab = () => (
   </div>
 );
 
-const DataTab = () => (
-  <div>
-    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Data sources</div>
-    <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 16 }}>Tables and views this app reads from. Changes in sources propagate automatically.</div>
-
-    {DATA_SOURCES.slice(0, 3).map((s, i) => (
-      <div key={s.id} className="card" style={{ padding: 16, marginBottom: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'grid', placeItems: 'center', color: 'var(--text-2)' }}>{I.database}</div>
-          <div style={{ flex: 1 }}>
-            <div className="mono" style={{ fontSize: 13, fontWeight: 500 }}>{s.id}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-              {s.rows} rows · {s.cols} cols · {s.updated} · used by {['4 blocks', '2 blocks', '1 block'][i]}
-            </div>
+const DataSourceCard = ({ s, i, onManageData }) => {
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const menuRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
+  return (
+    <div className="card data-source-card" style={{ padding: 16, marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ width: 36, height: 36, borderRadius: 6, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'grid', placeItems: 'center', color: 'var(--text-2)', flexShrink: 0 }}>{I.database}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="mono" style={{ fontSize: 13, fontWeight: 500 }}>{s.id}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+            {s.rows} rows · {s.cols} cols · {s.updated} · used by {['4 blocks', '2 blocks', '1 block'][i]}
           </div>
-          <Badge status="live">Fresh</Badge>
-          <Btn variant="ghost" size="sm" icon={I.external}>Open in Storage</Btn>
         </div>
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)', display: 'flex', gap: 20, fontSize: 11 }}>
-          <div>
-            <div style={{ color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Refresh</div>
-            <div className="mono" style={{ fontSize: 12 }}>every 15 min</div>
-          </div>
-          <div>
-            <div style={{ color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Fields used</div>
-            <div className="mono" style={{ fontSize: 12 }}>{['amount, order_date, region, customer_id', 'customer_id, tier, name', 'event_id, user_id, ts'][i]}</div>
-          </div>
-          <div>
-            <div style={{ color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Lineage</div>
-            <div className="mono" style={{ fontSize: 12 }}>2 transformations upstream</div>
+        <Badge status="live">Fresh</Badge>
+        <div className="data-source-card-actions">
+          <Btn variant="ghost" size="sm" icon={I.external}>View in Storage</Btn>
+          <div className="ds-more-wrapper" ref={menuRef}>
+            <button className="btn btn-ghost btn-sm ds-more-btn" onClick={() => setMenuOpen(open => !open)} aria-label="More options">{I.more}</button>
+            {menuOpen && (
+              <div className="ds-more-menu">
+                <button className="ds-more-item" onClick={() => setMenuOpen(false)}>
+                  <span className="ds-more-item-icon">{I.external}</span> View in Storage
+                </button>
+                <button className="ds-more-item" onClick={() => setMenuOpen(false)}>
+                  <span className="ds-more-item-icon">{I.flow}</span> View lineage
+                </button>
+                <button className="ds-more-item" onClick={() => { setMenuOpen(false); onManageData && onManageData(); }}>
+                  <span className="ds-more-item-icon">{I.swap}</span> Replace source
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
+      <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)', display: 'flex', gap: 20, fontSize: 11 }}>
+        <div>
+          <div style={{ color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Refresh</div>
+          <div className="mono" style={{ fontSize: 12 }}>every 15 min</div>
+        </div>
+        <div>
+          <div style={{ color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Fields used</div>
+          <div className="mono" style={{ fontSize: 12 }}>{['amount, order_date, region, customer_id', 'customer_id, tier, name', 'event_id, user_id, ts'][i]}</div>
+        </div>
+        <div>
+          <div style={{ color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Lineage</div>
+          <div className="mono" style={{ fontSize: 12 }}>2 transformations upstream</div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DataTab = ({ appId, openDataEditor }) => (
+  <div>
+    <div className="data-tab-section-header">
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 3 }}>Data sources</div>
+        <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 2 }}>Tables and views this app reads from. Changes in sources propagate automatically.</div>
+        <div style={{ fontSize: 11, color: 'var(--text-4, var(--text-3))', opacity: 0.7 }}>Changes to data sources are managed in the builder.</div>
+      </div>
+      <Btn variant="outline" size="sm" icon={I.wand} onClick={() => openDataEditor && openDataEditor(appId)}>Edit data</Btn>
+    </div>
+
+    {DATA_SOURCES.slice(0, 3).map((s, i) => (
+      <DataSourceCard key={s.id} s={s} i={i} onManageData={() => openDataEditor && openDataEditor(appId)} />
     ))}
+
+    <button className="data-tab-add-source" onClick={() => openDataEditor && openDataEditor(appId)}>
+      + Add data source
+    </button>
   </div>
 );
 

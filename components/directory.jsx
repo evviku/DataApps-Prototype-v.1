@@ -10,8 +10,6 @@ const Directory = ({ navigate }) => {
   const [filtersOpen, setFiltersOpen] = React.useState(false);
   const [sortOpen, setSortOpen] = React.useState(false);
   const [sortBy, setSortBy] = React.useState('updated_desc');
-  const [showCreate, setShowCreate] = React.useState(false);
-  const [showGitConnect, setShowGitConnect] = React.useState(false);
   const [showEmpty, setShowEmpty] = React.useState(false);
 
   const ownerOptions = React.useMemo(() => Array.from(new Set(APPS.map(a => a.owner))), []);
@@ -108,7 +106,7 @@ const Directory = ({ navigate }) => {
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <Btn variant="primary" size="sm" icon={I.plus} onClick={() => setShowCreate(true)}>New Data App</Btn>
+            <Btn variant="primary" size="sm" icon={I.plus} onClick={() => navigate('builder:new')}>New Data App</Btn>
           </div>
         </div>
 
@@ -229,7 +227,7 @@ const Directory = ({ navigate }) => {
         </div>
 
         {showEmptyList ? (
-          <EmptyState onCreate={() => setShowCreate(true)} />
+          <EmptyState onCreate={() => navigate('builder:new')} />
         ) : view === 'grid' ? (
           <div className="app-grid">
             {list.map(a => {
@@ -247,29 +245,6 @@ const Directory = ({ navigate }) => {
           </button>
         </div>
       </div>
-
-      {showCreate && (
-        <CreateFlow
-          onClose={() => setShowCreate(false)}
-          onPick={(mode) => {
-            setShowCreate(false);
-            if (mode === 'scratch:git') {
-              setShowGitConnect(true);
-              return;
-            }
-            navigate('builder:new:' + mode);
-          }}
-        />
-      )}
-      {showGitConnect && (
-        <ConnectGitModal
-          onClose={() => setShowGitConnect(false)}
-          onContinue={() => {
-            setShowGitConnect(false);
-            navigate('builder:new:scratch:git');
-          }}
-        />
-      )}
     </>
   );
 };
@@ -573,4 +548,4 @@ const ConnectGitModal = ({ onClose, onContinue }) => {
   );
 };
 
-Object.assign(window, { Directory, CreateFlow, ConnectGitModal });
+Object.assign(window, { Directory });

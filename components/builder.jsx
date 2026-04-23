@@ -22,6 +22,12 @@ const TEMPLATE_DEF = {
   blocks: INITIAL_DEF.blocks.map((b) => ({ ...b, bound: false, source: undefined })),
 };
 
+const BLANK_DEF = {
+  title: 'Untitled App',
+  subtitle: 'Start from code or ask Kai to scaffold the first version.',
+  blocks: [],
+};
+
 const DRAFT_PROMPT = 'Build a weekly revenue dashboard with a region filter and a YoY comparison chart. Use snowflake.prod.orders.';
 const DRAFT_DEF = {
   title: 'Drafting your page…',
@@ -62,37 +68,112 @@ const SOURCE_OPTIONS = [
   { id: 'sales.prod.invoices', label: 'sales.prod.invoices', desc: 'Invoice lines and customer performance.' },
 ];
 
+const PROJECT_SLUG = 'active-project';
+const TAKEN_URL_SLUGS = new Set(['revenue-pulse', 'marketing-mix', 'supply-chain-risk']);
+
+const ENTRY_TEMPLATES = [
+  { id: 'executive-dashboard', label: 'Executive dashboard', desc: 'Headline KPIs, trends, and summary narrative for leadership reviews.', prompt: 'Build an executive dashboard with key KPIs, trends, and a short performance summary.', preview: 'dashboard', category: 'Dashboard' },
+  { id: 'internal-tool', label: 'Internal tool', desc: 'Operational table views with actions, filters, and task-focused workflows.', prompt: 'Create an internal operations tool with filters, table actions, and a review workflow.', preview: 'table', category: 'Operations' },
+  { id: 'simulator', label: 'Simulator', desc: 'Scenario inputs and projected outcomes for what-if analysis.', prompt: 'Build a simulator with adjustable inputs, scenario comparisons, and projected outcomes.', preview: 'simulator', category: 'Analysis' },
+  { id: 'kpi-board', label: 'KPI board', desc: 'Dense scorecard layout for business metrics and performance checks.', prompt: 'Create a KPI board with headline metrics, trend charts, and exception callouts.', preview: 'kpi', category: 'Dashboard' },
+  { id: 'approval-flow', label: 'Approval flow', desc: 'Requests, status tracking, and reviewer actions in one guided app.', prompt: 'Build an approval flow app with request details, status tracking, and reviewer actions.', preview: 'approval', category: 'Operations' },
+  { id: 'ai-app', label: 'AI app', desc: 'Prompt-centric experience with generated insights and suggested next steps.', prompt: 'Create an AI-powered app that summarizes records, flags anomalies, and recommends next steps.', preview: 'ai', category: 'AI' },
+];
+
+const createBuildProgress = () => ({
+  current: 0,
+  total: DRAFT_STEPS.length,
+  steps: DRAFT_STEPS.map((step, index) => ({
+    label: step.message,
+    status: index === 0 ? 'active' : 'pending',
+  })),
+});
+
 const initialMessages = [
   { role: 'user', text: 'Build a weekly revenue dashboard with a region filter and a YoY comparison chart. Use snowflake.prod.orders.' },
   { role: 'kai', text: 'Drafted a 5-block page. Chart is unbound — I can wire it to orders.amount × week(order_date) once you confirm.', action: { title: 'Created page', diff: [{ op: 'add', path: 'header' }, { op: 'add', path: 'filters' }, { op: 'add', path: 'kpis[4]' }, { op: 'add', path: 'chart' }, { op: 'add', path: 'table' }] } },
 ];
 
+const CODE_EXPLORER_FILES = [
+  { id: 'app-definition.json', label: 'app-definition.json', section: 'root' },
+  { id: 'package.json', label: 'package.json', section: 'root' },
+  { id: 'src/index.ts', label: 'index.ts', section: 'src' },
+  { id: 'src/components/chart.tsx', label: 'chart.tsx', section: 'src/components' },
+  { id: 'src/components/table.tsx', label: 'table.tsx', section: 'src/components' },
+  { id: 'src/components/filters.tsx', label: 'filters.tsx', section: 'src/components' },
+];
+
+const CODE_FILE_SNIPPETS = {
+  'package.json': '{\n  "name": "data-app",\n  "private": true,\n  "scripts": { "start": "keboola-app dev" }\n}',
+  'src/index.ts': 'import { mountApp } from "./app";\n\nmountApp();\n',
+  'src/components/chart.tsx': 'export const RevenueChart = () => {\n  return null;\n};\n',
+  'src/components/table.tsx': 'export const TopCustomersTable = () => {\n  return null;\n};\n',
+  'src/components/filters.tsx': 'export const FiltersBar = () => {\n  return null;\n};\n',
+};
+
 const Builder = ({ navigate, appId }) => {
+  const [rawAppId, builderQuery = ''] = String(appId || '').split('?');
+  const requestedInspectTab = React.useMemo(() => {
+    const params = new URLSearchParams(builderQuery);
+    return params.get('inspect') === 'data' ? 'data' : 'tree';
+  }, [builderQuery]);
   const [selected, setSelected] = React.useState('b4');
   const [device, setDevice] = React.useState('desktop');
-  const isScratch = appId && appId.startsWith('new:scratch');
-  const isNewAi = appId && appId.startsWith('new:ai');
-  const isTemplate = appId && appId.startsWith('new:template');
+  const isNewEntry = rawAppId === 'new' || rawAppId === 'new:entry';
+  const isScratch = rawAppId && rawAppId.startsWith('new:scratch');
+  const isNewAi = rawAppId && rawAppId.startsWith('new:ai');
+  const isTemplate = rawAppId && rawAppId.startsWith('new:template');
+  const [builderStage, setBuilderStage] = React.useState(isNewEntry ? 'entry' : 'standard');
   const [view, setView] = React.useState(isScratch ? 'code' : 'preview');
   const [codePreviewCollapsed, setCodePreviewCollapsed] = React.useState(false);
-  const [tab, setTab] = React.useState('tree');
+  const [activeCodeFile, setActiveCodeFile] = React.useState('app-definition.json');
+  const [explorerOpen, setExplorerOpen] = React.useState({ root: true, src: true, components: true });
+  const [tab, setTab] = React.useState(requestedInspectTab);
   const [treePageOpen, setTreePageOpen] = React.useState(true);
   const [treeBlocksOpen, setTreeBlocksOpen] = React.useState(true);
-  const [def, setDef] = React.useState(isNewAi ? DRAFT_DEF : (isTemplate ? TEMPLATE_DEF : INITIAL_DEF));
+  const initialDef = isNewEntry ? BLANK_DEF : (isScratch ? BLANK_DEF : (isNewAi ? DRAFT_DEF : (isTemplate ? TEMPLATE_DEF : INITIAL_DEF)));
+  const [def, setDef] = React.useState(initialDef);
   const [messages, setMessages] = React.useState(isNewAi ? [
     { role: 'user', text: DRAFT_PROMPT },
     { role: 'kai', text: 'Which data source should I use? Pick one to start the app.', action: null },
-  ] : initialMessages);
+  ] : (isScratch
+    ? [{ role: 'kai', text: 'Blank code editor ready. Ask Kai to scaffold the first blocks, or author the app definition manually.', action: { title: 'Opened blank editor', diff: [{ op: 'add', path: 'app definition = empty' }] } }]
+    : (isTemplate
+      ? [{ role: 'kai', text: 'Template loaded. You can customize the layout, connect data, or switch to code view.', action: { title: 'Loaded template', diff: [{ op: 'add', path: 'template blocks' }] } }]
+      : (isNewEntry ? [] : initialMessages))));
   const [input, setInput] = React.useState('');
-  const [selectedSources, setSelectedSources] = React.useState((isNewAi || isTemplate) ? [] : ['snowflake.prod.orders']);
+  const [selectedSources, setSelectedSources] = React.useState((isNewAi || isTemplate || isNewEntry) ? [] : ['snowflake.prod.orders']);
   const [selectionStage, setSelectionStage] = React.useState(isNewAi ? 'source' : 'ready');
   const [buildStepsOpen, setBuildStepsOpen] = React.useState(true);
   const [generating, setGenerating] = React.useState(false);
   const [genBlockId, setGenBlockId] = React.useState(null);
   const [showBinding, setShowBinding] = React.useState(false);
   const [bindingTarget, setBindingTarget] = React.useState(null);
+  const [showAppSettings, setShowAppSettings] = React.useState(false);
+  const [showGitConnectModal, setShowGitConnectModal] = React.useState(false);
+  const [gitConnectError, setGitConnectError] = React.useState('');
+  const [gitConnectDraft, setGitConnectDraft] = React.useState({
+    repositoryUrl: '',
+    branch: 'main',
+    provider: 'GitHub',
+  });
+  const [settingsErrors, setSettingsErrors] = React.useState({});
+  const [publishHint, setPublishHint] = React.useState('');
+  const [appSettings, setAppSettings] = React.useState({
+    name: '',
+    urlSlug: '',
+    visibility: 'Private',
+    description: '',
+    isPublished: false,
+  });
   const [codeViewHeight, setCodeViewHeight] = React.useState(null);
+  const [entryPrompt, setEntryPrompt] = React.useState('');
+  const [entrySelectedSourceIds, setEntrySelectedSourceIds] = React.useState([]);
+  const [isPromoting, setIsPromoting] = React.useState(false);
+  const [transitionNote, setTransitionNote] = React.useState('');
+  const [templateFilterCategory, setTemplateFilterCategory] = React.useState(null);
   const draftTimers = React.useRef([]);
+  const promoteTimerRef = React.useRef(null);
   const streamRef = React.useRef(null);
   const codeEditorRef = React.useRef(null);
   const codeModeLayoutRef = React.useRef(null);
@@ -101,11 +182,17 @@ const Builder = ({ navigate, appId }) => {
   const MIN_CODE_HEIGHT = 200;
   const MIN_PREVIEW_HEIGHT = 180;
   const LAYOUT_GAP_AND_SPLITTER = 22;
-  const [codeText, setCodeText] = React.useState(() => JSON.stringify(isNewAi ? DRAFT_DEF : (isTemplate ? TEMPLATE_DEF : INITIAL_DEF), null, 2));
+  const [codeText, setCodeText] = React.useState(() => JSON.stringify(initialDef, null, 2));
+  const isEditingAppDefinition = activeCodeFile === 'app-definition.json';
+  const activeCodeFileText = isEditingAppDefinition ? codeText : (CODE_FILE_SNIPPETS[activeCodeFile] || '');
 
   React.useEffect(() => {
     if (streamRef.current) streamRef.current.scrollTop = streamRef.current.scrollHeight;
   }, [messages, generating]);
+
+  React.useEffect(() => {
+    setTab(requestedInspectTab);
+  }, [requestedInspectTab, rawAppId]);
 
   React.useEffect(() => {
     setCodeText(JSON.stringify(def, null, 2));
@@ -121,7 +208,10 @@ const Builder = ({ navigate, appId }) => {
   }, [selected, view, codeText]);
 
   React.useEffect(() => {
-    return () => draftTimers.current.forEach(clearTimeout);
+    return () => {
+      draftTimers.current.forEach(clearTimeout);
+      if (promoteTimerRef.current) clearTimeout(promoteTimerRef.current);
+    };
   }, []);
 
   React.useEffect(() => {
@@ -192,8 +282,7 @@ const Builder = ({ navigate, appId }) => {
     });
   };
 
-  const startDraftBuild = () => {
-    if (!isNewAi) return;
+  const startDraftBuild = (sourceId) => {
     draftTimers.current.forEach(clearTimeout);
     draftTimers.current = [];
 
@@ -201,7 +290,7 @@ const Builder = ({ navigate, appId }) => {
     setSelected(null);
     setGenerating(true);
 
-    const selectedSource = selectedSources[0] || 'snowflake.prod.orders';
+    const selectedSource = sourceId || selectedSources[0] || 'snowflake.prod.orders';
 
     DRAFT_STEPS.forEach((step, index) => {
       draftTimers.current.push(setTimeout(() => {
@@ -259,20 +348,148 @@ const Builder = ({ navigate, appId }) => {
         role: 'kai',
         text: `Using ${source.label}. Building your page now...`,
         action: null,
-        buildProgress: {
-          current: 0,
-          total: DRAFT_STEPS.length,
-          steps: DRAFT_STEPS.map((s, i) => ({
-            label: s.message,
-            status: i === 0 ? 'active' : 'pending',
-          })),
+        buildProgress: createBuildProgress(),
+      },
+    ]);
+    startDraftBuild(source.id);
+  };
+
+  const promoteToStandard = ({ note } = {}) => {
+    if (promoteTimerRef.current) clearTimeout(promoteTimerRef.current);
+    setTransitionNote(note || 'Kai is setting up your workspace...');
+    setIsPromoting(true);
+    setBuilderStage('transition');
+    promoteTimerRef.current = setTimeout(() => {
+      setBuilderStage('standard');
+      setIsPromoting(false);
+      setTransitionNote('');
+    }, 320);
+  };
+
+  const openPromptBuild = (prompt, sourceIds = []) => {
+    const trimmedPrompt = (prompt || '').trim();
+    if (!trimmedPrompt) return;
+
+    const resolvedSourceIds = Array.isArray(sourceIds) ? sourceIds : (sourceIds ? [sourceIds] : []);
+    completePromptBuild(trimmedPrompt, resolvedSourceIds);
+  };
+
+  const completePromptBuild = (prompt, sourceIds) => {
+    const primarySourceId = sourceIds[0] || null;
+    promoteToStandard({ note: 'Kai is turning your prompt into a first draft...' });
+    setView('preview');
+    setSelectionStage('ready');
+    setBuildStepsOpen(true);
+    setSelectedSources(sourceIds);
+    setEntryPrompt(prompt);
+    setInput('');
+    setMessages(m => [
+      ...m,
+      { role: 'user', text: sourceIds.length > 1 ? `Use ${sourceIds.join(', ')}.` : sourceIds.length === 1 ? `Use ${sourceIds[0]}.` : 'Skip data for now.' },
+      {
+        role: 'kai',
+        text: sourceIds.length > 0 ? `Using ${sourceIds.join(', ')}. Building your page now...` : 'Drafting your page now without data.',
+        action: null,
+        buildProgress: createBuildProgress(),
+      },
+    ]);
+    startDraftBuild(primarySourceId);
+  };
+
+  const openTemplateBuild = (template) => {
+    completeTemplateBuild(template, entrySelectedSourceIds);
+  };
+
+  const completeTemplateBuild = (template, sourceIds) => {
+    const nextDef = {
+      ...TEMPLATE_DEF,
+      title: template.label,
+      subtitle: template.prompt,
+    };
+
+    promoteToStandard({ note: `Kai is loading the ${template.label} template...` });
+    setView('preview');
+    setSelectionStage('ready');
+    setSelected('b1');
+    setDef(nextDef);
+    setSelectedSources(sourceIds);
+    setMessages(m => [
+      ...m,
+      { role: 'user', text: sourceIds.length > 1 ? `Use ${sourceIds.join(', ')}.` : sourceIds.length === 1 ? `Use ${sourceIds[0]}.` : 'Load template as is.' },
+      {
+        role: 'kai',
+        text: `Loaded the ${template.label} template${sourceIds.length > 0 ? ` with ${sourceIds.length === 1 ? sourceIds[0] : sourceIds.length + ' sources'} selected` : ''}. You can refine the blocks, bind data, or edit in code view.`,
+        action: { title: 'Loaded template', diff: [{ op: 'add', path: `${template.id} template` }] },
+      },
+    ]);
+  };
+
+  const openScratchBuild = (mode, gitConfig = null) => {
+    promoteToStandard({ note: mode === 'git' ? 'Kai is opening your repository workspace...' : 'Kai is opening a blank builder workspace...' });
+    setView('code');
+    setSelectionStage('ready');
+    setSelected(null);
+    setDef(BLANK_DEF);
+    setSelectedSources(entrySelectedSourceIds);
+    setMessages([
+      {
+        role: 'kai',
+        text: mode === 'git'
+          ? `Git repository connected${gitConfig?.repositoryUrl ? ` (${gitConfig.repositoryUrl}${gitConfig.branch ? `#${gitConfig.branch}` : ''})` : ''}. The blank app definition is ready in code view.`
+          : 'Blank code editor ready. Start from the app definition or ask Kai to scaffold the first version.',
+        action: {
+          title: mode === 'git' ? 'Connected Git repository' : 'Opened blank code editor',
+          diff: [{ op: 'add', path: 'app definition = empty' }],
         },
       },
     ]);
-    startDraftBuild();
+  };
+
+  const openGitConnectModal = () => {
+    setGitConnectError('');
+    setShowGitConnectModal(true);
+  };
+
+  const connectGitRepository = (nextDraft) => {
+    const repositoryUrl = (nextDraft.repositoryUrl || '').trim();
+    const branch = (nextDraft.branch || '').trim() || 'main';
+    const normalized = { ...nextDraft, repositoryUrl, branch };
+
+    if (!repositoryUrl) {
+      setGitConnectError('Repository URL is required.');
+      return;
+    }
+
+    if (!/^https?:\/\/.+\/.+/.test(repositoryUrl)) {
+      setGitConnectError('Enter a valid repository URL, for example https://github.com/org/repo.');
+      return;
+    }
+
+    setGitConnectError('');
+    setGitConnectDraft(normalized);
+    setShowGitConnectModal(false);
+    openScratchBuild('git', normalized);
   };
 
   const selectedBlock = def.blocks.find(b => b.id === selected);
+  const entrySelectedSources = SOURCE_OPTIONS.filter(source => entrySelectedSourceIds.includes(source.id));
+  const entrySelectedSource = entrySelectedSources[0] || null;
+
+  const toggleEntrySource = (sourceId) => {
+    setEntrySelectedSourceIds(prev => (
+      prev.includes(sourceId)
+        ? prev.filter(id => id !== sourceId)
+        : [...prev, sourceId]
+    ));
+  };
+
+  const appendEntryPromptToken = (token) => {
+    setEntryPrompt(prev => (prev ? `${prev} ${token}` : token));
+  };
+
+  const submitEntryPrompt = () => {
+    openPromptBuild(entryPrompt, entrySelectedSourceIds);
+  };
 
   const sendPrompt = (text) => {
     if (selectionStage === 'source') return;
@@ -346,9 +563,9 @@ const Builder = ({ navigate, appId }) => {
   }, []);
 
   const unboundCount = def.blocks.filter(b => !b.bound).length;
-  const backTarget = appId && !appId.startsWith('new') ? `detail:${appId}` : 'directory';
-  const activeApp = APPS.find(a => a.id === appId);
-  const builderAppName = activeApp?.name || (isScratch ? 'New app (Scratch)' : isTemplate ? 'New app (Template)' : isNewAi ? 'New app (Kai draft)' : def.title);
+  const backTarget = rawAppId && !rawAppId.startsWith('new') ? `detail:${rawAppId}` : 'directory';
+  const activeApp = APPS.find(a => a.id === rawAppId);
+  const builderAppName = appSettings.name || activeApp?.name || (builderStage !== 'standard' ? 'New app' : (isScratch ? 'New app (Scratch)' : isTemplate ? 'New app (Template)' : isNewAi ? 'New app (Kai draft)' : def.title));
   const builderAppDesc = activeApp?.desc || (isScratch ? 'Blank app in code mode.' : isTemplate ? 'Template selected, ready to customize.' : isNewAi ? 'Kai-generated app in progress.' : 'Builder session');
   const builderAppIcon = activeApp?.icon || 'DA';
 
@@ -377,9 +594,71 @@ const Builder = ({ navigate, appId }) => {
     }
   };
 
+  React.useEffect(() => {
+    const fallbackName = activeApp?.name || (builderStage !== 'standard' ? 'New app' : (def.title || 'New app'));
+    setAppSettings(prev => ({
+      ...prev,
+      name: prev.name || fallbackName,
+      urlSlug: prev.urlSlug || fallbackName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+    }));
+  }, [activeApp, builderStage, def.title]);
+
+  const validateSettings = React.useCallback((settings) => {
+    const errors = {};
+    const name = (settings.name || '').trim();
+    const slug = (settings.urlSlug || '').trim();
+
+    if (!name) errors.name = 'App name is required.';
+    if (!slug) {
+      errors.urlSlug = 'URL slug is required.';
+    } else {
+      if (slug !== slug.toLowerCase()) errors.urlSlug = 'URL slug must be lowercase.';
+      else if (slug.includes(' ')) errors.urlSlug = 'URL slug cannot contain spaces.';
+      else if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+        errors.urlSlug = 'Use lowercase letters, numbers, and hyphens only.';
+      } else if (!appSettings.isPublished && TAKEN_URL_SLUGS.has(slug)) {
+        errors.urlSlug = 'This URL is already in use. Choose another slug.';
+      }
+    }
+
+    return errors;
+  }, [appSettings.isPublished]);
+
+  const appUrl = `apps.keboola.io/${PROJECT_SLUG}/${appSettings.urlSlug || 'new-app'}`;
+
+  const saveAppSettings = (nextSettings) => {
+    const nextErrors = validateSettings(nextSettings);
+    setSettingsErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) return;
+
+    setAppSettings(nextSettings);
+    if (nextSettings.name && builderStage === 'standard') {
+      setDef(d => ({ ...d, title: nextSettings.name }));
+    }
+    setPublishHint('');
+    setShowAppSettings(false);
+  };
+
+  const handlePublish = () => {
+    if (builderStage !== 'standard') return;
+
+    const nextErrors = validateSettings(appSettings);
+    setSettingsErrors(nextErrors);
+
+    if (Object.keys(nextErrors).length > 0) {
+      setPublishHint('Fix App Settings before publishing.');
+      setShowAppSettings(true);
+      return;
+    }
+
+    setAppSettings(prev => ({ ...prev, isPublished: true }));
+    setPublishHint('Published successfully. URL is now locked.');
+    setMessages(m => [...m, { role: 'kai', text: `Published ${appSettings.name || 'app'} at ${appUrl}.`, action: { title: 'Published app', diff: [{ op: 'mod', path: 'app.status = published' }] } }]);
+  };
+
   return (
     <>
-      <div className="content flush">
+      <div className="content flush builder-shell">
         <div className="builder-layout">
           <div className="topbar builder-topbar">
             <div className="crumbs">
@@ -389,31 +668,55 @@ const Builder = ({ navigate, appId }) => {
               <span className="c-sep">/</span>
               <span onClick={() => navigate('directory')} style={{ cursor: 'pointer' }}>Data Apps</span>
               <span className="c-sep">/</span>
-              <span className="c-cur">{def.title}</span>
-              <Badge status={unboundCount > 0 ? 'unbound' : 'draft'}>
-                {unboundCount > 0 ? `${unboundCount} unbound` : 'Draft'}
-              </Badge>
+              <span className="c-cur">{builderAppName}</span>
+              {builderStage === 'standard' && (
+                <Badge status={unboundCount > 0 ? 'unbound' : 'draft'}>
+                  {unboundCount > 0 ? `${unboundCount} unbound` : 'Draft'}
+                </Badge>
+              )}
             </div>
             <div className="topbar-actions">
-              <Btn variant="ghost" size="sm" icon={I.undo}>Undo</Btn>
-              <Btn variant="ghost" size="sm" icon={I.redo}>Redo</Btn>
-              <div style={{ width: 1, background: 'var(--border)', height: 20, margin: '0 4px' }} />
-              <Btn variant="outline" size="sm" icon={I.eye}>Preview</Btn>
-              <Btn variant="primary" size="sm" icon={I.deploy}>Publish</Btn>
+              <Btn variant="ghost" size="sm" icon={I.undo} disabled={builderStage !== 'standard'}>Undo</Btn>
+              <Btn variant="ghost" size="sm" icon={I.redo} disabled={builderStage !== 'standard'}>Redo</Btn>
+              <>
+                <div style={{ width: 1, background: 'var(--border)', height: 20, margin: '0 4px' }} />
+                <Btn variant="outline" size="sm" icon={I.settings} onClick={() => setShowAppSettings(true)}>App Settings</Btn>
+                <Btn variant="outline" size="sm" icon={I.eye} disabled={builderStage !== 'standard'}>Preview</Btn>
+                <Btn variant="primary" size="sm" icon={I.deploy} disabled={builderStage !== 'standard'} onClick={handlePublish}>Publish</Btn>
+              </>
             </div>
           </div>
 
-          <div className="builder">
+          {publishHint && (
+            <div className={`builder-publish-hint ${publishHint.includes('Fix') ? 'error' : 'ok'}`}>
+              {publishHint}
+            </div>
+          )}
+
+          <div className={`builder ${builderStage === 'entry' ? 'builder-entry-mode' : ''}${builderStage === 'transition' ? ' builder-transitioning' : ''}${isPromoting ? ' promoting' : ''}`}>
+          {builderStage !== 'entry' && (
           <div className="b-chat">
             <div className="b-chat-header">
               <div className="kai-avatar">K</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="kai-name">Kai</div>
-                <div className="kai-state">{selectionStage === 'source' ? 'waiting for source' : generating ? 'drafting changes…' : 'ready'}</div>
+                <div className="kai-state">{builderStage === 'transition' ? 'preparing workspace...' : (selectionStage === 'source' ? 'waiting for source' : generating ? 'drafting changes…' : 'ready')}</div>
               </div>
               <button className="btn-ghost" style={{ padding: 4, borderRadius: 4, color: 'var(--text-3)' }}>{I.more}</button>
             </div>
 
+            {builderStage === 'transition' ? (
+              <div className="chat-stream chat-transitioning">
+                <div className="msg">
+                  <div className="msg-avatar kai">K</div>
+                  <div className="msg-body">
+                    <div className="msg-author">Kai</div>
+                    <div className="msg-text">{transitionNote || 'Setting up your builder session...'}</div>
+                    <div className="kai-streaming"><span /><span /><span /></div>
+                  </div>
+                </div>
+              </div>
+            ) : (
             <div className="chat-stream" ref={streamRef}>
               {messages.map((m, i) => (
                 <div key={i} className="msg">
@@ -478,7 +781,9 @@ const Builder = ({ navigate, appId }) => {
                 </div>
               )}
             </div>
+            )}
 
+            {builderStage !== 'transition' && (
             <div className="chat-composer">
               {selectionStage === 'source' && (
                 <div style={{ padding: '16px', border: '1px solid var(--border)', borderRadius: 14, background: 'var(--surface-2)', marginBottom: 10 }}>
@@ -517,87 +822,270 @@ const Builder = ({ navigate, appId }) => {
                 </div>
               </div>
             </div>
+            )}
           </div>
+          )}
 
-          <div className="b-preview">
-            <div className="preview-chrome">
-              <div className="preview-url">{I.globe}<span>apps.keboola.io/jan/revenue-pulse</span></div>
-              {unboundCount > 0 && <Btn variant="outline" size="sm" icon={I.link} onClick={bindAll}>Bind {unboundCount} blocks</Btn>}
-              <div className="device-toggle">
-                <button className={device === 'desktop' ? 'active' : ''} onClick={() => setDevice('desktop')}>{I.monitor}</button>
-                <button className={device === 'tablet' ? 'active' : ''} onClick={() => setDevice('tablet')}>{I.tablet}</button>
-                <button className={device === 'mobile' ? 'active' : ''} onClick={() => setDevice('mobile')}>{I.smartphone}</button>
-              </div>
-              <div className="view-toggle">
-                <button className={view === 'preview' ? 'active' : ''} onClick={() => setView('preview')}>Preview</button>
-                <button className={view === 'code' ? 'active' : ''} onClick={() => setView('code')}>Code</button>
-              </div>
-              <Btn variant="ghost" size="sm" icon={I.refresh} />
-            </div>
-            {view === 'preview' && (
-              <div className="preview-canvas">
-                <div className={`preview-frame ${device}`}>
-                  <div className="app-canvas">
-                    {def.blocks.map(b => (
-                      <AppBlock key={b.id} block={b} selected={selected === b.id} generating={genBlockId === b.id} onSelect={() => setSelected(b.id)} onBind={() => bindBlock(b.id)} />
-                    ))}
+          <div className={`b-preview ${builderStage === 'transition' ? 'is-revealing' : ''}`}>
+            {builderStage === 'entry' ? (
+              <div className="builder-entry-main-surface">
+                <div className="builder-entry-hero">
+                  <h1>What do you want to build?</h1>
+                  <p>Describe the app, start from a template, or begin from scratch.</p>
+                  <div className="builder-entry-composer">
+                    <textarea
+                      value={entryPrompt}
+                      onChange={(e) => setEntryPrompt(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          submitEntryPrompt();
+                        }
+                      }}
+                      placeholder={entrySelectedSource ? `Describe the app you want to build using ${entrySelectedSource.label}...` : 'Describe the app you want to build...'}
+                    />
+                    <div className="builder-entry-composer-footer">
+                      <div className="builder-entry-input-actions">
+                        <button className="btn-ghost btn-sm" onClick={() => appendEntryPromptToken(entrySelectedSource ? `@table:${entrySelectedSource.label}` : '@table')}>
+                          {I.database} Attach table
+                        </button>
+                        <button className="btn-ghost btn-sm" onClick={() => appendEntryPromptToken('@app:Revenue Pulse')}>
+                          {I.copy} Reference app
+                        </button>
+                      </div>
+                      <Btn variant="accent" size="sm" icon={I.arrow} onClick={submitEntryPrompt} disabled={!entryPrompt.trim()}>
+                        Build with Kai
+                      </Btn>
+                    </div>
+                  </div>
+                      {entrySelectedSources.length > 0 && (
+                    <div className="builder-entry-context">Using <span className="mono">{entrySelectedSources.map(source => source.label).join(', ')}</span> as optional context.</div>
+                  )}
+
+                  <div className="builder-entry-scratch">
+                    <div>
+                      <div className="builder-entry-scratch-title">Start from scratch</div>
+                      <div className="builder-entry-scratch-copy">For users who want full control.</div>
+                    </div>
+                    <div className="builder-entry-scratch-actions">
+                      <Btn variant="outline" size="sm" icon={I.git} onClick={openGitConnectModal}>Connect Git repository</Btn>
+                      <Btn variant="outline" size="sm" icon={I.code} onClick={() => openScratchBuild('code')}>Open blank code editor</Btn>
+                    </div>
+                  </div>
+
+                  <div className="builder-entry-template-divider" aria-hidden="true" />
+
+                  <div className="builder-entry-section">
+                    <div className="builder-entry-section-title">Template suggestions</div>
+                    {(() => {
+                      const categories = ['All', ...Array.from(new Set(ENTRY_TEMPLATES.map(t => t.category)))];
+                      const selectedCategory = templateFilterCategory || 'All';
+                      const filteredTemplates = selectedCategory === 'All' ? ENTRY_TEMPLATES : ENTRY_TEMPLATES.filter(t => t.category === selectedCategory);
+                      return (
+                        <>
+                          <div className="builder-entry-template-filters">
+                            {categories.map(cat => (
+                              <button
+                                key={cat}
+                                className={`builder-entry-filter-tab ${selectedCategory === cat ? 'active' : ''}`}
+                                onClick={() => setTemplateFilterCategory(cat === 'All' ? null : cat)}
+                              >
+                                {cat}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="builder-entry-template-grid">
+                            {filteredTemplates.map((template) => (
+                              <button
+                                key={template.id}
+                                className="builder-entry-template-card"
+                                onClick={() => openTemplateBuild(template)}
+                              >
+                                <div className={`builder-entry-template-preview preview-${template.preview}`} aria-hidden="true">
+                                  <span className="template-preview-pill" />
+                                  <span className="template-preview-line short" />
+                                  <span className="template-preview-line mid" />
+                                  <span className="template-preview-line long" />
+                                  <span className="template-preview-block a" />
+                                  <span className="template-preview-block b" />
+                                  <span className="template-preview-block c" />
+                                </div>
+                                <div className="builder-entry-template-meta">
+                                  <div className="builder-entry-template-name">{template.label}</div>
+                                  <div className="builder-entry-template-desc">{template.desc}</div>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
-            )}
-            {view === 'code' && (
-              <div className="code-mode-layout" ref={codeModeLayoutRef}>
-                <div className={`code-preview-panel ${codePreviewCollapsed ? 'collapsed' : ''}`}>
-                  <div className="code-preview-header">
-                    <span>Live preview</span>
-                    <button className="btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => setCodePreviewCollapsed(c => !c)}>
-                      {codePreviewCollapsed ? 'Show' : 'Hide'}
-                    </button>
+            ) : (
+              <>
+                <div className="preview-chrome">
+                  <div className="preview-url">{I.globe}<span>apps.keboola.io/jan/revenue-pulse</span></div>
+                  {unboundCount > 0 && <Btn variant="outline" size="sm" icon={I.link} onClick={bindAll}>Bind {unboundCount} blocks</Btn>}
+                  <div className="device-toggle">
+                    <button className={device === 'desktop' ? 'active' : ''} onClick={() => setDevice('desktop')}>{I.monitor}</button>
+                    <button className={device === 'tablet' ? 'active' : ''} onClick={() => setDevice('tablet')}>{I.tablet}</button>
+                    <button className={device === 'mobile' ? 'active' : ''} onClick={() => setDevice('mobile')}>{I.smartphone}</button>
                   </div>
-                  <div className={`code-preview-canvas-wrap ${codePreviewCollapsed ? 'collapsed' : ''}`} aria-hidden={codePreviewCollapsed}>
-                    <div className="code-preview-canvas">
-                      <div className={`preview-frame ${device}`}>
-                        <div className="app-canvas">
-                          {def.blocks.map(b => (
-                            <AppBlock key={b.id} block={b} selected={selected === b.id} generating={genBlockId === b.id} onSelect={() => setSelected(b.id)} onBind={() => bindBlock(b.id)} />
-                          ))}
+                  <div className="view-toggle">
+                    <button className={view === 'preview' ? 'active' : ''} onClick={() => setView('preview')}>Preview</button>
+                    <button className={view === 'code' ? 'active' : ''} onClick={() => setView('code')}>Code</button>
+                  </div>
+                  <Btn variant="ghost" size="sm" icon={I.refresh} />
+                </div>
+                {view === 'preview' && (
+                  <div className="preview-canvas">
+                    <div className={`preview-frame ${device}`}>
+                      <div className="app-canvas">
+                        {def.blocks.map(b => (
+                          <AppBlock key={b.id} block={b} selected={selected === b.id} generating={genBlockId === b.id} onSelect={() => setSelected(b.id)} onBind={() => bindBlock(b.id)} />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {view === 'code' && (
+                  <div className="code-mode-layout" ref={codeModeLayoutRef}>
+                    <div className={`code-preview-panel ${codePreviewCollapsed ? 'collapsed' : ''}`}>
+                      <div className="code-preview-header">
+                        <span>Live preview</span>
+                        <button className="btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => setCodePreviewCollapsed(c => !c)}>
+                          {codePreviewCollapsed ? 'Show' : 'Hide'}
+                        </button>
+                      </div>
+                      <div className={`code-preview-canvas-wrap ${codePreviewCollapsed ? 'collapsed' : ''}`} aria-hidden={codePreviewCollapsed}>
+                        <div className="code-preview-canvas">
+                          <div className={`preview-frame ${device}`}>
+                            <div className="app-canvas">
+                              {def.blocks.map(b => (
+                                <AppBlock key={b.id} block={b} selected={selected === b.id} generating={genBlockId === b.id} onSelect={() => setSelected(b.id)} onBind={() => bindBlock(b.id)} />
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div
+                      className={`code-resizer ${codePreviewCollapsed ? 'collapsed' : ''}`}
+                      role="separator"
+                      aria-orientation="horizontal"
+                      aria-label="Resize code editor"
+                      onMouseDown={startCodeResize}
+                    />
+                    <div
+                      ref={codeViewRef}
+                      className={`code-view ${codeViewHeight && !codePreviewCollapsed ? 'resized' : ''}`}
+                      style={codeViewHeight && !codePreviewCollapsed
+                        ? { minHeight: MIN_CODE_HEIGHT, height: codeViewHeight, flex: '0 0 auto' }
+                        : { minHeight: MIN_CODE_HEIGHT }}
+                    >
+                      <div className="code-editor-layout">
+                        <aside className="code-file-sidebar" aria-label="Code explorer">
+                          <div className="code-file-sidebar-header">Explorer</div>
+                          <div className="code-file-tree">
+                            <button className="code-file-folder-row" onClick={() => setExplorerOpen(prev => ({ ...prev, root: !prev.root }))}>
+                              {explorerOpen.root ? I.chevronDown : I.chevronRight}
+                              <span>root</span>
+                            </button>
+                            {explorerOpen.root && CODE_EXPLORER_FILES.filter(file => file.section === 'root').map(file => (
+                              <button
+                                key={file.id}
+                                className={`code-file-item ${activeCodeFile === file.id ? 'active' : ''}`}
+                                onClick={() => setActiveCodeFile(file.id)}
+                              >
+                                <span className="code-file-icon">{I.blank}</span>
+                                <span>{file.label}</span>
+                              </button>
+                            ))}
+
+                            <button className="code-file-folder-row nested" onClick={() => setExplorerOpen(prev => ({ ...prev, src: !prev.src }))}>
+                              {explorerOpen.src ? I.chevronDown : I.chevronRight}
+                              <span>src</span>
+                            </button>
+                            {explorerOpen.src && (
+                              <>
+                                {CODE_EXPLORER_FILES.filter(file => file.section === 'src').map(file => (
+                              <button
+                                key={file.id}
+                                className={`code-file-item nested-file-src ${activeCodeFile === file.id ? 'active' : ''}`}
+                                onClick={() => setActiveCodeFile(file.id)}
+                              >
+                                <span className="code-file-icon">{I.code}</span>
+                                <span>{file.label}</span>
+                              </button>
+                                ))}
+                                <button className="code-file-folder-row nested deeper" onClick={() => setExplorerOpen(prev => ({ ...prev, components: !prev.components }))}>
+                                  {explorerOpen.components ? I.chevronDown : I.chevronRight}
+                                  <span>components</span>
+                                </button>
+                              </>
+                            )}
+                            {explorerOpen.src && explorerOpen.components && CODE_EXPLORER_FILES.filter(file => file.section === 'src/components').map(file => (
+                              <button
+                                key={file.id}
+                                className={`code-file-item nested-file ${activeCodeFile === file.id ? 'active' : ''}`}
+                                onClick={() => setActiveCodeFile(file.id)}
+                              >
+                                <span className="code-file-icon">{I.code}</span>
+                                <span>{file.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </aside>
+
+                        <div className="code-editor-pane">
+                          <div className="code-editor-tabbar">
+                            <div className="code-editor-tab active">{CODE_EXPLORER_FILES.find(file => file.id === activeCodeFile)?.label || 'app-definition.json'}</div>
+                          </div>
+                          <textarea
+                            ref={codeEditorRef}
+                            value={activeCodeFileText}
+                            onChange={(e) => {
+                              if (!isEditingAppDefinition) return;
+                              handleCodeChange(e.target.value, e.target.selectionStart);
+                            }}
+                            onClick={(e) => {
+                              if (!isEditingAppDefinition) return;
+                              syncSelectionFromCursor(e.currentTarget.value, e.currentTarget.selectionStart);
+                            }}
+                            onKeyUp={(e) => {
+                              if (!isEditingAppDefinition) return;
+                              syncSelectionFromCursor(e.currentTarget.value, e.currentTarget.selectionStart);
+                            }}
+                            readOnly={!isEditingAppDefinition}
+                            spellCheck={false}
+                            style={{ width: '100%', height: '100%', fontFamily: 'var(--font-mono)', fontSize: 12, padding: 16, border: 'none', outline: 'none', background: 'var(--surface)', color: 'var(--text)' }}
+                          />
                         </div>
                       </div>
                     </div>
                   </div>
-                </div>
-                <div
-                  className={`code-resizer ${codePreviewCollapsed ? 'collapsed' : ''}`}
-                  role="separator"
-                  aria-orientation="horizontal"
-                  aria-label="Resize code editor"
-                  onMouseDown={startCodeResize}
-                />
-                <div
-                  ref={codeViewRef}
-                  className={`code-view ${codeViewHeight && !codePreviewCollapsed ? 'resized' : ''}`}
-                  style={codeViewHeight && !codePreviewCollapsed
-                    ? { minHeight: MIN_CODE_HEIGHT, height: codeViewHeight, flex: '0 0 auto' }
-                    : { minHeight: MIN_CODE_HEIGHT }}
-                >
-                  <textarea
-                    ref={codeEditorRef}
-                    value={codeText}
-                    onChange={(e) => handleCodeChange(e.target.value, e.target.selectionStart)}
-                    onClick={(e) => syncSelectionFromCursor(e.currentTarget.value, e.currentTarget.selectionStart)}
-                    onKeyUp={(e) => syncSelectionFromCursor(e.currentTarget.value, e.currentTarget.selectionStart)}
-                    spellCheck={false}
-                    style={{ width: '100%', height: '100%', fontFamily: 'var(--font-mono)', fontSize: 12, padding: 16, border: 'none', outline: 'none', background: 'var(--surface)', color: 'var(--text)' }}
-                  />
-                </div>
-              </div>
+                )}
+              </>
             )}
           </div>
 
+          {builderStage !== 'entry' && (
           <div className="b-inspect">
             <div className="inspect-tabs">
-              <button className={`inspect-tab ${tab === 'tree' ? 'active' : ''}`} onClick={() => setTab('tree')}>Structure</button>
-              <button className={`inspect-tab ${tab === 'data' ? 'active' : ''}`} onClick={() => setTab('data')}>Data</button>
+              <button
+                className={`inspect-tab ${tab === 'tree' ? 'active' : ''}`}
+                onClick={() => setTab('tree')}
+              >
+                Structure
+              </button>
+              <button
+                className={`inspect-tab ${tab === 'data' ? 'active' : ''}`}
+                onClick={() => setTab('data')}
+              >
+                Data
+              </button>
             </div>
             <div className="inspect-body">
               {tab === 'tree' && (
@@ -611,14 +1099,44 @@ const Builder = ({ navigate, appId }) => {
                   </div>
                 </div>
               )}
-              {tab === 'data' && <DataSources selectedSources={selectedSources} />}
+              {tab === 'data' && (
+                selectedSources.length > 0 ? (
+                  <DataSources selectedSources={selectedSources} />
+                ) : (
+                  <div style={{ padding: '16px', color: 'var(--text-3)', fontSize: 12, textAlign: 'center' }}>
+                    <div style={{ marginBottom: 12 }}>No data sources selected yet.</div>
+                    <Btn variant="outline" size="sm" style={{ width: '100%' }}>Connect data</Btn>
+                  </div>
+                )
+              )}
             </div>
           </div>
-          </div>
+          )}
         </div>
+      </div>
       </div>
 
       {showBinding && <BindingSheet blockId={bindingTarget} onClose={() => setShowBinding(false)} onComplete={completeBinding} />}
+      {showAppSettings && (
+        <AppSettingsModal
+          settings={appSettings}
+          errors={settingsErrors}
+          projectSlug={PROJECT_SLUG}
+          onClose={() => setShowAppSettings(false)}
+          onSave={saveAppSettings}
+        />
+      )}
+      {showGitConnectModal && (
+        <ConnectGitModal
+          draft={gitConnectDraft}
+          error={gitConnectError}
+          onClose={() => {
+            setGitConnectError('');
+            setShowGitConnectModal(false);
+          }}
+          onConnect={connectGitRepository}
+        />
+      )}
     </>
   );
 };
@@ -1076,43 +1594,207 @@ const Inspector = ({ block, onBind }) => {
   );
 };
 
-const DataSources = ({ selectedSources = ['snowflake.prod.orders'] }) => (
+const DataSources = ({ selectedSources = ['snowflake.prod.orders'], onToggleSource, hideEmptyUsed = false }) => {
+  const usedSet = new Set(selectedSources);
+  const availableSources = DATA_SOURCES.filter(s => !usedSet.has(s.id));
+  const usedSources = DATA_SOURCES.filter(s => usedSet.has(s.id));
+
+  return (
   <div>
-    <div className="inspect-group-label">Used in this app</div>
-    {selectedSources.length === 0 && (
+    {(usedSources.length > 0 || !hideEmptyUsed) && <div className="inspect-group-label">Used in this app</div>}
+    {!hideEmptyUsed && usedSources.length === 0 && (
       <div className="data-pill" style={{ marginBottom: 10 }}>
         <span className="pill-icon">{I.database}</span>
         <span style={{ flex: 1, textAlign: 'left', color: 'var(--text-3)' }}>No source selected yet</span>
       </div>
     )}
-    {selectedSources.map(id => {
-      const source = SOURCE_OPTIONS.find(s => s.id === id);
-      const fallback = DATA_SOURCES.find(s => s.id === id);
-      const label = source?.id || fallback?.id || id;
-      const meta = fallback ? `${fallback.rows} rows · ${fallback.cols} cols · ${fallback.updated}` : (source?.desc || 'Connected source');
+    {usedSources.map(source => {
+      const label = source.id;
+      const meta = `${source.rows} rows · ${source.cols} cols · ${source.updated}`;
       return (
-        <div key={id} style={{ marginBottom: 14 }}>
-          <div className="data-pill bound" style={{ marginBottom: 6 }}>
+        <div key={source.id} style={{ marginBottom: 14 }}>
+          <button
+            className="data-pill bound"
+            style={{ marginBottom: 6 }}
+            onClick={() => onToggleSource && onToggleSource(source.id)}
+          >
             <span className="pill-icon">{I.database}</span>
             <span className="mono" style={{ flex: 1, textAlign: 'left' }}>{label}</span>
             <span style={{ color: 'var(--text-3)', fontSize: 10 }}>selected</span>
-          </div>
+          </button>
           <div style={{ fontSize: 10.5, color: 'var(--text-3)', lineHeight: 1.5, paddingLeft: 4 }}>{meta}</div>
         </div>
       );
     })}
 
     <div className="inspect-group-label">Available in workspace</div>
-    {DATA_SOURCES.slice(1).map(s => (
-      <div key={s.id} className="data-pill" style={{ marginBottom: 4 }}>
+    {availableSources.map(s => (
+      <button
+        key={s.id}
+        className="data-pill"
+        style={{ marginBottom: 4 }}
+        onClick={() => onToggleSource && onToggleSource(s.id)}
+      >
         <span className="pill-icon">{I.database}</span>
         <span className="mono" style={{ flex: 1, textAlign: 'left' }}>{s.id}</span>
         <span style={{ color: 'var(--text-3)', fontSize: 10 }}>{s.rows}</span>
-      </div>
+      </button>
     ))}
     <button className="btn btn-outline btn-sm" style={{ width: '100%', marginTop: 10 }}>{I.plus} Connect source</button>
   </div>
-);
+  );
+};
+
+const AppSettingsModal = ({ settings, errors = {}, projectSlug, onClose, onSave }) => {
+  const [draft, setDraft] = React.useState(settings);
+
+  React.useEffect(() => {
+    setDraft(settings);
+  }, [settings]);
+
+  const update = (patch) => setDraft(prev => ({ ...prev, ...patch }));
+
+  return (
+    <>
+      <div className="modal-scrim" onClick={onClose} />
+      <div className="modal" style={{ width: 620, position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 60 }}>
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">App Settings</div>
+            <div className="modal-sub">Configure app URL, name, and basic behavior.</div>
+          </div>
+          <button className="btn-ghost" onClick={onClose} style={{ padding: 4 }}>{I.close}</button>
+        </div>
+        <div className="modal-body">
+          {(errors.name || errors.urlSlug) && (
+            <div className="builder-settings-error-banner">Please fix the highlighted fields before publishing.</div>
+          )}
+
+          <div className="inspect-group" style={{ marginBottom: 14 }}>
+            <div className="inspect-field-label">App name</div>
+            <input
+              className={`input ${errors.name ? 'input-error' : ''}`}
+              value={draft.name}
+              onChange={(e) => update({ name: e.target.value })}
+              placeholder="My Data App"
+              aria-invalid={!!errors.name}
+            />
+            {errors.name && <div className="builder-field-error">{errors.name}</div>}
+          </div>
+
+          <div className="inspect-group" style={{ marginBottom: 14 }}>
+            <div className="inspect-field-label">App URL slug</div>
+            <div className="input-group" style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+              <span className="mono" style={{ padding: '0 10px', fontSize: 11, color: 'var(--text-3)' }}>{`apps.keboola.io/${projectSlug}/`}</span>
+              <input
+                className={`input ${errors.urlSlug ? 'input-error' : ''}`}
+                style={{ borderLeft: '1px solid var(--border)' }}
+                value={draft.urlSlug}
+                onChange={(e) => update({ urlSlug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') })}
+                placeholder="my-data-app"
+                readOnly={settings.isPublished}
+                aria-invalid={!!errors.urlSlug}
+              />
+            </div>
+            {settings.isPublished && <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-3)' }}>URL is locked after publishing.</div>}
+            {errors.urlSlug && <div className="builder-field-error">{errors.urlSlug}</div>}
+          </div>
+
+          <div className="inspect-group" style={{ marginBottom: 14 }}>
+            <div className="inspect-field-label">Visibility</div>
+            <div className="tweaks-row">
+              <button className={`tweaks-btn ${draft.visibility === 'Private' ? 'active' : ''}`} onClick={() => update({ visibility: 'Private' })}>Private</button>
+              <button className={`tweaks-btn ${draft.visibility === 'Shared' ? 'active' : ''}`} onClick={() => update({ visibility: 'Shared' })}>Shared</button>
+              <button className={`tweaks-btn ${draft.visibility === 'Public' ? 'active' : ''}`} onClick={() => update({ visibility: 'Public' })}>Public</button>
+            </div>
+          </div>
+
+          <div className="inspect-group">
+            <div className="inspect-field-label">Description (optional)</div>
+            <textarea
+              className="input"
+              style={{ height: 88, padding: '8px 10px', resize: 'vertical' }}
+              value={draft.description || ''}
+              onChange={(e) => update({ description: e.target.value })}
+              placeholder="Short description of the app purpose and audience"
+            />
+          </div>
+        </div>
+        <div className="sheet-footer" style={{ borderTop: '1px solid var(--border)' }}>
+          <Btn variant="ghost" size="sm" onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" size="sm" onClick={() => onSave(draft)}>Save settings</Btn>
+        </div>
+      </div>
+    </>
+  );
+};
+
+const ConnectGitModal = ({ draft, error, onClose, onConnect }) => {
+  const [localDraft, setLocalDraft] = React.useState(draft);
+
+  React.useEffect(() => {
+    setLocalDraft(draft);
+  }, [draft]);
+
+  const update = (patch) => setLocalDraft(prev => ({ ...prev, ...patch }));
+
+  return (
+    <>
+      <div className="modal-scrim" onClick={onClose} />
+      <div className="modal" style={{ width: 620, position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 60 }}>
+        <div className="modal-header">
+          <div>
+            <div className="modal-title">Connect Git Repository</div>
+            <div className="modal-sub">Link source control to initialize your app in code mode.</div>
+          </div>
+          <button className="btn-ghost" onClick={onClose} style={{ padding: 4 }}>{I.close}</button>
+        </div>
+
+        <div className="modal-body">
+          {error && <div className="builder-settings-error-banner">{error}</div>}
+
+          <div className="inspect-group" style={{ marginBottom: 14 }}>
+            <div className="inspect-field-label">Provider</div>
+            <div className="tweaks-row">
+              <button className={`tweaks-btn ${localDraft.provider === 'GitHub' ? 'active' : ''}`} onClick={() => update({ provider: 'GitHub' })}>GitHub</button>
+              <button className={`tweaks-btn ${localDraft.provider === 'GitLab' ? 'active' : ''}`} onClick={() => update({ provider: 'GitLab' })}>GitLab</button>
+              <button className={`tweaks-btn ${localDraft.provider === 'Bitbucket' ? 'active' : ''}`} onClick={() => update({ provider: 'Bitbucket' })}>Bitbucket</button>
+            </div>
+          </div>
+
+          <div className="inspect-group" style={{ marginBottom: 14 }}>
+            <div className="inspect-field-label">Repository URL</div>
+            <input
+              className={`input ${error ? 'input-error' : ''}`}
+              value={localDraft.repositoryUrl}
+              onChange={(e) => update({ repositoryUrl: e.target.value })}
+              placeholder="https://github.com/org/repo"
+              aria-invalid={!!error}
+            />
+          </div>
+
+          <div className="inspect-group" style={{ marginBottom: 6 }}>
+            <div className="inspect-field-label">Branch</div>
+            <input
+              className="input"
+              value={localDraft.branch}
+              onChange={(e) => update({ branch: e.target.value })}
+              placeholder="main"
+            />
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+            We will open a blank app definition in code mode and connect this repository for versioning.
+          </div>
+        </div>
+
+        <div className="sheet-footer" style={{ borderTop: '1px solid var(--border)' }}>
+          <Btn variant="ghost" size="sm" onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" size="sm" icon={I.git} onClick={() => onConnect(localDraft)}>Connect repository</Btn>
+        </div>
+      </div>
+    </>
+  );
+};
 
 /* ==== BINDING SHEET (3 steps) ==== */
 const BindingSheet = ({ blockId, onClose, onComplete }) => {

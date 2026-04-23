@@ -34,7 +34,7 @@ const Badge = ({ status, children }) => {
   return <span className={`badge ${s.cls}`}><span className="dot" />{children || s.label}</span>;
 };
 
-const Avatar = ({ name, size = 24, color = 'oklch(0.75 0.08 55)' }) => {
+const Avatar = ({ name, size = 24, color = 'var(--primary)' }) => {
   const initials = (name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
   return (
     <div className="sb-user-avatar" style={{ width: size, height: size, fontSize: Math.round(size * 0.42), background: color }}>
@@ -320,12 +320,12 @@ const Navbar = ({ view, isKaiOpen, onKaiToggle }) => {
         {/* Keboola Logo */}
         <div className="navbar-logo">
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="6" fill="#1E2235"/>
-            <circle cx="14" cy="10" r="3.5" fill="#6B3FFB"/>
-            <path d="M7 20c0-3.866 3.134-7 7-7s7 3.134 7 7" stroke="#6B3FFB" strokeWidth="1.8" strokeLinecap="round"/>
-            <circle cx="8" cy="16" r="1.5" fill="#4ECDC4"/>
-            <circle cx="20" cy="16" r="1.5" fill="#4ECDC4"/>
-            <circle cx="14" cy="21" r="1.5" fill="#4ECDC4"/>
+            <rect width="28" height="28" rx="6" fill="#0c3668"/>
+            <circle cx="14" cy="10" r="3.5" fill="#2f84e3"/>
+            <path d="M7 20c0-3.866 3.134-7 7-7s7 3.134 7 7" stroke="#2f84e3" strokeWidth="1.8" strokeLinecap="round"/>
+            <circle cx="8" cy="16" r="1.5" fill="#22b868"/>
+            <circle cx="20" cy="16" r="1.5" fill="#22b868"/>
+            <circle cx="14" cy="21" r="1.5" fill="#22b868"/>
           </svg>
         </div>
 

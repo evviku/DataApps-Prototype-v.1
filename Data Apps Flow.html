@@ -25,19 +25,15 @@
 
   <script type="text/babel">
     const DEFAULTS = /*EDITMODE-BEGIN*/{
-      "accent_hue": 295,
+      "accent_hue": 255,
       "density": "comfortable",
       "sidebar": "show"
     }/*EDITMODE-END*/;
 
     function applyTweaks(t) {
-      document.documentElement.style.setProperty('--accent', `oklch(0.58 0.22 ${t.accent_hue})`);
-      document.documentElement.style.setProperty('--accent-2', `oklch(0.52 0.24 ${t.accent_hue})`);
-      document.documentElement.style.setProperty('--accent-soft', `oklch(0.96 0.03 ${t.accent_hue})`);
-      document.documentElement.style.setProperty('--accent-soft-border', `oklch(0.88 0.08 ${t.accent_hue})`);
-      document.documentElement.style.setProperty('--kai', `oklch(0.58 0.22 ${t.accent_hue})`);
+      document.documentElement.style.setProperty('--kai', `hsl(${t.accent_hue} 58% 56%)`);
       document.documentElement.style.setProperty('--kai-grad',
-        `linear-gradient(135deg, oklch(0.62 0.22 ${(t.accent_hue + 15) % 360}), oklch(0.55 0.22 ${(t.accent_hue - 25 + 360) % 360}))`);
+        `linear-gradient(135deg, hsl(${(t.accent_hue + 12) % 360} 58% 58%), hsl(${(t.accent_hue - 18 + 360) % 360} 62% 54%))`);
     }
 
     function App() {
@@ -89,7 +85,7 @@
           <div className="main">
             {view === 'directory' && <Directory navigate={navigate} />}
             {view === 'builder' && <Builder navigate={navigate} appId={appId} />}
-            {view === 'detail' && <Detail navigate={navigate} appId={appId} tab={detailTab} setTab={setDetailTab} />}
+            {view === 'detail' && <Detail navigate={navigate} appId={appId} tab={detailTab} setTab={setDetailTab} openDataEditor={(targetAppId) => navigate(`builder:${targetAppId}?inspect=data`)} />}
             {view === 'states' && <StatesPage navigate={navigate} />}
           </div>
           {showChat && <ChatPanel />}
